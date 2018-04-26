@@ -15,15 +15,19 @@
     <h1>websocket聊天室</h1>
     <div style="width: 800px;border: 1px solid gray;height: 300px;">
         <div style="width: 200px;height: 300px;float: left;text-align: left;">
+			<!--在线人数-->
             <p><span>当前在线:</span><span id="user_num">0</span></p>
+			<!--在线用户列表-->
             <div id="user_list" style="overflow: auto;">
 
             </div>
         </div>
+		<!--这个就是用户发送的消息了，消息屏幕-->
         <div id="msg_list" style="width: 598px;border:  1px solid gray; height: 300px;overflow: scroll;float: left;">
         </div>
     </div>
     <br>
+	<!--一个文本框，用来输入信息，点击发送后交给服务端，并展示回来显示在大屏上-->
     <textarea id="msg_box" rows="6" cols="50" onkeydown="confirm(event)"></textarea><br>
     <input type="button" value="发送" onclick="send()">
 </div>
@@ -33,15 +37,18 @@
 <script type="text/javascript">
     // 存储用户名到全局变量,握手成功后发送给服务器
     var uname = prompt('请输入用户名', 'user' + uuid(8, 16));
-    var ws = new WebSocket("ws://127.0.0.1:8080");
+	//与服务端开始建立连接
+    var ws = new WebSocket("ws://127.0.0.1:8000");
+	//握手成功后，触发onopen事件，在屏幕展示成功信息
     ws.onopen = function () {
         var data = "系统消息：建立连接成功";
+
         listMsg(data);
     };
 
     /**
      * 分析服务器返回信息
-     *
+     *事先对客户端和服务端交互的消息格式，进行了设计与分类。
      * msg.type : user 普通信息;system 系统信息;handshake 握手信息;login 登陆信息; logout 退出信息;
      * msg.from : 消息来源
      * msg.content: 消息内容
@@ -57,6 +64,7 @@
             case 'user':
                 sender = msg.from + ': ';
                 break;
+			//由服务端发送成功握手的http响应后，再次向客户端发送此类信息
             case 'handshake':
                 var user_info = {'type': 'login', 'content': uname};
                 sendMsg(user_info);
@@ -103,7 +111,9 @@
         var content = msg_box.value;
         var reg = new RegExp("\r\n", "g");
         content = content.replace(reg, "");
+		//组装成一定的消息格式
         var msg = {'content': content.trim(), 'type': 'user'};
+		//发给服务端
         sendMsg(msg);
         msg_box.value = '';
         // todo 清除换行符
@@ -111,6 +121,7 @@
 
     /**
      * 将消息内容添加到输出框中,并将滚动条滚动到最下方
+	 * 创建一个p标签，然后追加到msg_list对象里
      */
     function listMsg(data) {
         var msg_list = document.getElementById("msg_list");
@@ -118,6 +129,7 @@
 
         msg.innerHTML = data;
         msg_list.appendChild(msg);
+		//scrollTop设置为多少，就是滚动条的位置
         msg_list.scrollTop = msg_list.scrollHeight;
     }
 
@@ -154,6 +166,7 @@
      * @param msg
      */
     function sendMsg(msg) {
+		//js的JSON对象的stringify方法
         var data = JSON.stringify(msg);
         ws.send(data);
     }
