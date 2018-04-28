@@ -38,7 +38,7 @@ class WebSocket {
 
         $this->sockets[0] = ['resource' => $this->master];
         //$pid = posix_getpid();//获得当前进程ID
-        $pid = getmypid();//获得当前进程ID
+        $pid = getmypid();//获得当前进程ID,由于posix扩展未安装，改用它
         $this->debug(["server: {$this->master} started,pid: {$pid}"]);
 
 		//然后用无限循环开始监听
@@ -62,7 +62,9 @@ class WebSocket {
 		//监视三个套接字数组里的套接字资源：可读的，可写的，异常的。只第一个只读的有值。一旦有变动，$sockets就会筛选粗状态出现变化的那些套接字，其它不保存。
 		//第四个参数超时时间非常重要。null意味着将会阻塞到这里，直到有可操作的socket返回。才会往下进行
 		//第一次阻塞到socket_select，是服务器刚刚启动的时候，它要等待客户端的连接。
+        $this->debug(['$sockets开始阻塞在select num ：'.count($sockets)]);
         $read_num = socket_select($sockets, $write, $except, NULL);
+        $this->debug(["监听到有{$read_num}个套接字发生变动"]);
         // select作为监视函数,赶紧去查看php手册
         if (false === $read_num) {
             $this->error([
@@ -78,9 +80,9 @@ class WebSocket {
             // 如果是服务器socket,则处理连接逻辑，（只有每个客户端来连接服务端时才会走这段程序）
             if ($socket == $this->master) {
 				//master进程读取一个客户端进程。有可能读不到。阻塞到这里
-				$this->debug(["masterAccept"=>$socket]);
+				$this->debug(["服务端套接字有状态变动，估计有客户端来连接了"]);
                 $client = socket_accept($this->master);
-				$this->debug(["masterAfter"=>$client]);
+				$this->debug(["读取到一个客户端",$client]);
                 // 创建,绑定,监听后socket_accept函数将会读取外部连接,一旦有连接过来,将会返回一个新的socket资源用以交互,如果是一个多个连接的队列,只会处理第一个,如果没有连接过来的话,进程将会被阻塞,直到连接上。
 				//如果用set_socket_blocking或socket_set_noblock()设置了阻塞,会返回false;返回资源后,将会持续等待连接。
 				//这里明显并不是上述过程，而是通过socket_select开启监听，然后通过socket_accept直接读取外部连接
@@ -92,13 +94,14 @@ class WebSocket {
                     ]);
                     continue;
                 } else {
-					$this->debug(["to connect"=>$client]);
+					$this->debug(["执行connect方法，把客户端套接字放到数组里"]);
                     self::connect($client);
                     continue;
                 }
             } else {
                 // 如果可读的是其他已连接socket,则读取2048字节的数据,保存到$buffer缓存里
 				//最终广播给所有在线的客户端，服务端只是转接，不显示。
+                $this->debug(["客户端套接字有状态变动，socket_recv()读取该套接字的信息"]);
                 $bytes = @socket_recv($socket, $buffer, 2048, 0);
                 if ($bytes < 9) {
                     $recv_msg = $this->disconnect($socket);
@@ -110,15 +113,17 @@ class WebSocket {
                     } else {
 						//已经握手完毕，客户端第一次给服务端发送的信息就是登录信息。这里parse就是服务端开始解析
 						//客户端过来的消息
+                        $this->debug(["调用parse方法，解析该套接字的帧"]);
                         $recv_msg = self::parse($buffer);
                     }
                 }
 				//在$recv_msg数组头部加一个元素
                 array_unshift($recv_msg, 'receive_msg');
-				//整理解析的数据
+				//服务端整理解析客户端的信息，并组装成websocket的帧
                 $msg = self::dealMsg($socket, $recv_msg);
 				
-				//广播下发送给所有其他客户端
+				//把帧数据广播给所有其他客户端
+				//服务端除了在与某客户端握手后发送一次有关握手完成的消息之外，其他服务端的消息都是广播
                 $this->broadcast($msg);
             }
         }
@@ -151,7 +156,8 @@ class WebSocket {
 
     /**
      * 客户端关闭连接
-     *既然一个$socket代表一个c/s连接，那么干掉这个$socket就表示断开这个连接了
+     *既然一个$socket代表一个c/s连接，那么干掉这个$socket就表示
+     *服务端和客户端断开连接了
      * @param $socket
      *
      * @return array
@@ -170,12 +176,13 @@ class WebSocket {
     /**
      * 该方法完成服务端的握手过程
      * 1 服务端发送握手的消息，本质上还是一个http响应。客户端会在屏幕上显示：xxx连接成功。
-     * 2 服务端除了握手响应外，还发送了个handshake类型的消息给客户端，属于业务消息非websocket范围内的消息概念。
+     * 2 服务端的握手既然是http响应，所以使用字符即可，不必是二进制数据，容易看得懂
+     * 3 服务端除了握手响应外，还发送了个handshake类型的消息给客户端，属于业务消息非websocket范围内的消息概念。
 	 上述两个过程后，该方法的使命就完成了。
 	 *下面简单说下客户端的逻辑
-     * 客户端收到handshake类型的消息后，
-	 *会回一个login的消息，服务端接收后不再单独响应给该客户端，而是广播所有客户端（大意就是xxx登录了），然后继续监听。
-     * 客户端收到广播信息后，就会在大屏幕上打印广播消息，然后客户端们就等待，等用户开始编写信息发送给服务端；
+     * 客户端收到handshake类型的消息后，会向服务端回一个login的消息，
+     * 服务端接收后不再单独响应给该客户端，而是广播所有客户端（大意就是xxx登录了），然后继续监听。
+     * 客户端收到广播信息后，就会在大屏幕上打印广播消息，然后客户端们就等待，每个客户端的用户开始编写信息发送给服务端；
      * 服务端在接收客户端的消息之前，服务端又会一直阻塞到select。
      * @param $socket
      * @param $buffer
@@ -327,8 +334,11 @@ class WebSocket {
     }
 
     /**
-     * 拼装信息
-     *
+     *组装服务端和客户端交互的业务数据格式
+     *这里的数据，就是业务消息，并非websocket原生的信息概念。
+     *其实就是一些关联数组
+     *根据客户端的消息类型，服务端响应对应的消息类型
+     *这里注意，服务端响应客户端的消息，是广播发送给客户端的，并非一对一的
      * @param $socket
      * @param $recv_msg
      *          [
@@ -350,7 +360,7 @@ class WebSocket {
                 $user_list = array_column($this->sockets, 'uname');
                 $response['type'] = 'login';
                 $response['content'] = $msg_content;
-                $response['user_list'] = $user_list;
+                $response['user_list'] = $user_list;//每个客户端登录时，都把当前在线用户列表告诉客户端
                 break;
             case 'logout':
                 $user_list = array_column($this->sockets, 'uname');
@@ -365,7 +375,7 @@ class WebSocket {
                 $response['content'] = $msg_content;
                 break;
         }
-
+        //组装成符合websocket格式的数据帧
         return $this->build(json_encode($response));
     }
 
