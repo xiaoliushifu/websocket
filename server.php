@@ -22,6 +22,7 @@ class WebSocket {
             // 在SOL_SOCKET层的重用选项设置为1。设置IP和端口重用,在重启服务器后能重新使用此端口;
             socket_set_option($this->master, SOL_SOCKET, SO_REUSEADDR, 1);
             // 将IP和端口绑定在服务器socket上;
+            $this->debug(["绑定在套接字: {$host}:{$port} 并开始监听"]);
             socket_bind($this->master, $host, $port);
             // listen函数使用主动连接套接口变为被连接套接口，使得一个进程可以接受其它进程的请求，从而成为一个服务器进程。在TCP服务器编程中listen函数把进程变为一个服务器，并指定相应的套接字变为被动连接,其中的能存储的请求不明的socket数目。
             socket_listen($this->master, self::LISTEN_SOCKET_NUM);
@@ -39,10 +40,11 @@ class WebSocket {
         $this->sockets[0] = ['resource' => $this->master];
         //$pid = posix_getpid();//获得当前进程ID
         $pid = getmypid();//获得当前进程ID,由于posix扩展未安装，改用它
-        $this->debug(["server: {$this->master} started,pid: {$pid}"]);
+        $this->debug(["服务端: {$this->master} 启动,pid: {$pid}"]);
 
 		//然后用无限循环开始监听
         while (true) {
+            $this->debug(["开始一次循环"]);
             try {
                 $this->doServer();
             } catch (\Exception $e) {
@@ -52,6 +54,7 @@ class WebSocket {
                     $e->getMessage()
                 ]);
             }
+            $this->debug(["结束一次循环"]);
         }
     }
 
@@ -62,7 +65,7 @@ class WebSocket {
 		//监视三个套接字数组里的套接字资源：可读的，可写的，异常的。只第一个只读的有值。一旦有变动，$sockets就会筛选粗状态出现变化的那些套接字，其它不保存。
 		//第四个参数超时时间非常重要。null意味着将会阻塞到这里，直到有可操作的socket返回。才会往下进行
 		//第一次阻塞到socket_select，是服务器刚刚启动的时候，它要等待客户端的连接。
-        $this->debug(['$sockets开始阻塞在select num ：'.count($sockets)]);
+        $this->debug(['$sockets开始阻塞在select 套接字数量：'.count($sockets)]);
         $read_num = socket_select($sockets, $write, $except, NULL);
         $this->debug(["监听到有{$read_num}个套接字发生变动"]);
         // select作为监视函数,赶紧去查看php手册
@@ -108,19 +111,21 @@ class WebSocket {
                 } else {
 					//一般客户端第一次连接时都是先发送握手http，这里就是准备服务端的握手响应
                     if (!$this->sockets[(int)$socket]['handshake']) {
+                        $this->debug(["该客户端尚未握手，服务端准备处理握手"]);
                         self::handShake($socket, $buffer);
                         continue;
                     } else {
 						//已经握手完毕，客户端第一次给服务端发送的信息就是登录信息。这里parse就是服务端开始解析
 						//客户端过来的消息
-                        $this->debug(["调用parse方法，解析该套接字的帧"]);
                         $recv_msg = self::parse($buffer);
+                        $this->debug(["调用parse方法，解析帧中的应用信息为：".implode(',',$recv_msg)]);
                     }
                 }
 				//在$recv_msg数组头部加一个元素
                 array_unshift($recv_msg, 'receive_msg');
 				//服务端整理解析客户端的信息，并组装成websocket的帧
                 $msg = self::dealMsg($socket, $recv_msg);
+                $this->debug(["组装好服务端的响应信息帧{$msg},\n广播给所有的客户端"]);
 				
 				//把帧数据广播给所有其他客户端
 				//服务端除了在与某客户端握手后发送一次有关握手完成的消息之外，其他服务端的消息都是广播
@@ -144,14 +149,14 @@ class WebSocket {
         socket_getpeername($socket, $ip, $port);
         $socket_info = [
             'resource' => $socket,
-            'uname' => '',
+            'uname' => '未知',
             'handshake' => false,//未握手
             'ip' => $ip,//它的ip
             'port' => $port,//它的端口
         ];
 		//对一个资源进行(int)会是咋回事呢？非常棒，这样会获取资源在内存中的编号，就是用var_dump()打印时输出的编号。
         $this->sockets[(int)$socket] = $socket_info;
-        $this->debug(array_merge(['socket_connect'], $socket_info));
+        $this->debug(array_merge(['最新客户端socket信息'], $socket_info));
     }
 
     /**
@@ -211,7 +216,7 @@ class WebSocket {
 		//打入debug日志
         socket_getpeername($socket, $ip, $port);
         $this->debug([
-            'hand_shake',
+            '服务端握手响应',
             $socket,
             $ip,
             $port
@@ -230,7 +235,7 @@ class WebSocket {
     /**
      * 解析数据
 	 * 服务端解析客户端发送的数据帧
-     *
+     * 客户端向服务端发送的数据帧是经过掩码处理的。
      * @param $buffer
 	 *注意，这里的$buffer是字节数据，它是从套接字直接获取来的。虽然看起来是乱码。
 	 所以$buffer{1}其实是获得了一个字符，8个bit位，是第二个字节。用dechex(ord("字符"))可以获得它的第一个字节的内码
@@ -404,7 +409,7 @@ class WebSocket {
 		//添加个时间信息
         array_unshift($info, $time);
 		//每个元素都json_encode处理下
-        $info = array_map('json_encode', $info);
+        //$info = array_map('json_encode', $info);
 		//组织成一定的格式，追加到日志文件里
         file_put_contents(self::LOG_PATH . 'websocket_debug.log', implode(' | ', $info) . "\r\n", FILE_APPEND);
     }
