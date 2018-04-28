@@ -64,16 +64,19 @@
             case 'user':
                 sender = msg.from + ': ';
                 break;
-			//由服务端发送成功握手的http响应后，再次向客户端发送此类信息
+			//客户端连接服务端成功后（握手完毕），会收到服务端的一个handshake类型的消息
+			//客户端收到该信息后，会发送此类信息回应服务端
             case 'handshake':
                 var user_info = {'type': 'login', 'content': uname};
                 sendMsg(user_info);
                 return;
+			//服务端在接收一个客户端的login消息后，都会广播给所有的客户端。包括发送login类型消息的客户端。
             case 'login':
             case 'logout':
                 user_name = msg.content;
                 name_list = msg.user_list;
                 change_type = msg.type;
+				//展示到大屏幕上
                 dealUser(user_name, change_type, name_list);
                 return;
         }
@@ -135,7 +138,7 @@
 
     /**
      * 处理用户登陆消息
-     *
+     * 把从服务端收到的广播消息，解析到大屏幕上
      * @param user_name 用户名
      * @param type  login/logout
      * @param name_list 用户列表

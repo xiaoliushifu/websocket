@@ -59,12 +59,11 @@ class WebSocket {
         $write = $except = NULL;
 		//获得sockets下一级数组里的resuource字段，也就是所有的套接字资源对象
         $sockets = array_column($this->sockets, 'resource');
-		//监视三个套接字数组里的套接字资源：可读的，可写的，异常的。只第一个只读的有值
+		//监视三个套接字数组里的套接字资源：可读的，可写的，异常的。只第一个只读的有值。一旦有变动，$sockets就会筛选粗状态出现变化的那些套接字，其它不保存。
 		//第四个参数超时时间非常重要。null意味着将会阻塞到这里，直到有可操作的socket返回。才会往下进行
-		$this->debug(["socket_select"=>"before"]);
+		//第一次阻塞到socket_select，是服务器刚刚启动的时候，它要等待客户端的连接。
         $read_num = socket_select($sockets, $write, $except, NULL);
-		$this->debug(["socket_select"=>"After"]);
-        // select作为监视函数,参数分别是(监视可读,可写,异常,超时时间),返回可操作数目,出错时返回false;
+        // select作为监视函数,赶紧去查看php手册
         if (false === $read_num) {
             $this->error([
                 'error_select',
@@ -73,15 +72,18 @@ class WebSocket {
             ]);
             return;
         }
-		//上面监听到了三个套接字组有变动（由于$write,$except为空，自然是$sockets里呗）。
+		//上面监听到了三个套接字组的一个有变动（由于$write,$except为空，自然是$sockets里呗）。
+		//否则还要遍历$write,$except数组
         foreach ($sockets as $socket) {
-            // 如果可读的是服务器socket,则处理连接逻辑
+            // 如果是服务器socket,则处理连接逻辑，（只有每个客户端来连接服务端时才会走这段程序）
             if ($socket == $this->master) {
 				//master进程读取一个客户端进程。有可能读不到。阻塞到这里
 				$this->debug(["masterAccept"=>$socket]);
                 $client = socket_accept($this->master);
 				$this->debug(["masterAfter"=>$client]);
-                // 创建,绑定,监听后accept函数将会接受socket要来的连接,一旦有一个连接成功,将会返回一个新的socket资源用以交互,如果是一个多个连接的队列,只会处理第一个,如果没有连接的话,进程将会被阻塞,直到连接上.如果用set_socket_blocking或socket_set_noblock()设置了阻塞,会返回false;返回资源后,将会持续等待连接。
+                // 创建,绑定,监听后socket_accept函数将会读取外部连接,一旦有连接过来,将会返回一个新的socket资源用以交互,如果是一个多个连接的队列,只会处理第一个,如果没有连接过来的话,进程将会被阻塞,直到连接上。
+				//如果用set_socket_blocking或socket_set_noblock()设置了阻塞,会返回false;返回资源后,将会持续等待连接。
+				//这里明显并不是上述过程，而是通过socket_select开启监听，然后通过socket_accept直接读取外部连接
                 if (false === $client) {
                     $this->error([
                         'err_accept',
@@ -101,12 +103,13 @@ class WebSocket {
                 if ($bytes < 9) {
                     $recv_msg = $this->disconnect($socket);
                 } else {
-					//一般客户端第一次连接时都没有握手，就去握手
+					//一般客户端第一次连接时都是先发送握手http，这里就是准备服务端的握手响应
                     if (!$this->sockets[(int)$socket]['handshake']) {
                         self::handShake($socket, $buffer);
                         continue;
                     } else {
-						//已经握手，就解析数据，这是客户端发给服务端的信息
+						//已经握手完毕，客户端第一次给服务端发送的信息就是登录信息。这里parse就是服务端开始解析
+						//客户端过来的消息
                         $recv_msg = self::parse($buffer);
                     }
                 }
@@ -165,8 +168,15 @@ class WebSocket {
     }
 
     /**
-     * 用公共握手算法握手
-     *
+     * 该方法完成服务端的握手过程
+     * 1 服务端发送握手的消息，本质上还是一个http响应。客户端会在屏幕上显示：xxx连接成功。
+     * 2 服务端除了握手响应外，还发送了个handshake类型的消息给客户端，属于业务消息非websocket范围内的消息概念。
+	 上述两个过程后，该方法的使命就完成了。
+	 *下面简单说下客户端的逻辑
+     * 客户端收到handshake类型的消息后，
+	 *会回一个login的消息，服务端接收后不再单独响应给该客户端，而是广播所有客户端（大意就是xxx登录了），然后继续监听。
+     * 客户端收到广播信息后，就会在大屏幕上打印广播消息，然后客户端们就等待，等用户开始编写信息发送给服务端；
+     * 服务端在接收客户端的消息之前，服务端又会一直阻塞到select。
      * @param $socket
      * @param $buffer
      *
@@ -187,8 +197,8 @@ class WebSocket {
 		//拼接上应答密钥就完事了。
         $upgrade_message .= "Sec-WebSocket-Accept:" . $upgrade_key . "\r\n\r\n";
 
-		//上面过程准备好了握手的http响应。下面就是它发送给客户端，自此websocket部分的握手就完成了。
-        socket_write($socket, $upgrade_message, strlen($upgrade_message));// 向socket里写入升级信息
+        //上面过程准备好了握手的http响应。下面就是它发送给客户端$socket，自此websocket部分的握手就完成了。
+        socket_write($socket, $upgrade_message, strlen($upgrade_message));
         $this->sockets[(int)$socket]['handshake'] = true;
 		
 		//打入debug日志
@@ -200,7 +210,7 @@ class WebSocket {
             $port
         ]);
 		
-        // 这里服务端主动向客户端发送一个消息。
+        // 这里服务端主动向客户端发送一个消息。服务端是用build方法完成对数据帧的组装
         $msg = [
             'type' => 'handshake',
             'content' => 'done',
@@ -212,6 +222,7 @@ class WebSocket {
 
     /**
      * 解析数据
+	 * 服务端解析客户端发送的数据帧
      *
      * @param $buffer
 	 *注意，这里的$buffer是字节数据，它是从套接字直接获取来的。虽然看起来是乱码。
@@ -223,12 +234,13 @@ class WebSocket {
      */
     private function parse($buffer) {
         $decoded = '';
-		//这里的目的是要先获得数据长度。根据帧的格式前8位bit无需看；第9位固定mask位是1。
-		//我们首先关注10-16位，也就是取得第二个字节的前7为。
-		//ord($buffer[1])是获得第二个字节的ascii值。
+		//这里和服务端向客户端发送信息时相反，s->c是根据应用数据来确定数据长度值。
+		//的目的是要先获得数据长度值。根据帧的格式前8位bit无需看；第9位固定mask位是1。
+		//我们首先关注10-16位，也就是取得第二个字节的前7位（右数）。
+		//ord($buffer[1])是获得第二个字节的ascii值(内码）。
 		// 任何8bit和01111111按位与操作，将得到8bit的低七位。
         $len = ord($buffer[1]) & 127;
-        if ($len === 126) {//126，则其后的两个字节表示长度数值，2+2是4。
+        if ($len === 126) {//126，根据帧的格式，该7位之后的两个字节表示长度数值，2+2是4。
             $masks = substr($buffer, 4, 4);//第0位是，从第33位（第五个字节）开始取位数，共取32位（4个字节），也就是四个字符，因为mask key是固定的32位（4个字节）
             $data = substr($buffer, 8);//则第8个字节之后的都是掩码的数据。
         } else if ($len === 127) {//127,则说明后续的8个字节的值表示数据长度，2+8=10，
@@ -240,7 +252,7 @@ class WebSocket {
         }
 		//找到了mask key；也找到了掩码过的应用数据，下面就是反掩码操作。
 		//掩码和反掩码算法都是官网给出的，且都是如下的操作。
-		//我们知道，连续对同一个值做偶数次抑或，都将返回原始的值。这就解释了为啥掩码和反掩码是同一个操作算法的原因了。
+		//我们知道，连续对同一个值做偶数次抑或，都将返回原始的值。这就解释了为啥掩码和反掩码是同一个算法的原因了。
         for ($index = 0; $index < strlen($data); $index++) {
             $decoded .= $data[$index] ^ $masks[$index % 4];
         }
@@ -297,8 +309,9 @@ class WebSocket {
         $data = '';
         $l = strlen($msg);
         for ($i = 0; $i < $l; $i++) {
-			//ord返回参数的ascii值，这里ord($msg{$i})是取得每个应用数据里每个字符的每个字节的内码，
-			//ord的结算结果一定是一个ascii值（十进制）
+			//ord返回参数的ascii值，这里ord($msg{$i})是取得每个应用数据里每个字符的每个字节的内码（计算机存储的实际内部编码，与字符集相关）
+			//内码只是存储，内码和字符集映射关系影响显示。
+			//ord的结算结果一定是一个ascii值（十进制）整型
 			//然后再用dechex转换为16进制表示。
             $data .= dechex(ord($msg{$i}));
         }
