@@ -227,6 +227,7 @@ class WebSocket {
             'type' => 'handshake',
             'content' => 'done',
         ];
+		$this->debug(["服务端握手完成后，向客户端发一个消息".implode(',',$msg)]);
         $msg = $this->build(json_encode($msg));
         socket_write($socket, $msg, strlen($msg));
         return true;
@@ -429,4 +430,4 @@ class WebSocket {
     }
 }
 //启动服务器
-$ws = new WebSocket("127.0.0.1", "8000");
+$ws = new WebSocket("0.0.0.0", "8000");

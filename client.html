@@ -38,7 +38,8 @@
     // 存储用户名到全局变量,握手成功后发送给服务器
     var uname = prompt('请输入用户名', 'user' + uuid(8, 16));
 	//与服务端开始建立连接
-    var ws = new WebSocket("ws://127.0.0.1:8000");
+	var hostname = location.hostname;
+    var ws = new WebSocket("ws://"+hostname+":8000");
 	//握手成功后，触发onopen事件，在屏幕展示成功信息
     ws.onopen = function () {
         var data = "系统消息：建立连接成功";
